@@ -16,30 +16,33 @@ class Trade:
         start_time = time.time()    # track runtime
         
         # instance variables
-        self.api = open("/home/dev/code/dat/api.txt", "r").read().splitlines()  
+        with open("/home/dev/code/dat/api.txt", "r") as api_file:
+            self.api = api_file.read().splitlines()
         self.wirePath = "/home/dev/code/tmp/" + str(datetime.now().strftime("%Y-%m-%d %H-%M-%S")) + ".txt"
         self.cb_client = cbc(self.api[0], self.api[1])      # coinbase api connection
         self.cbp = cbpro.PublicClient()                     # live price data
-        self.include = []                                   # available assets
-
-        self.syncWallets()          # match input file with coinbase api
+        self.include = set()                                # available assets
+        self.output_buffer = []                             # for all output
+        
+        self.syncWallets()                                  # match input file with coinbase api
     
-        # asset prices
-        prices = []
+        # asset prices                                      # keep this until self.include
+        prices = set()                                      # is finalized    
         for n in self.include:
             try:
                 ticker = self.getPrice(n)
-                prices.append(n + " " + str(ticker['price']))                
-            except:
-                self.output(self.output(n + " " + str(e) + "\n\n"))
-        
-        self.output("Prices\n" + str(prices) + "\n\n")
+                if ticker:
+                    prices.add(f"{n} {ticker['price']}")                
+            except Exception as e:
+                self.output_buffer.append(f"{n} Invalid Price\n\n")
+        self.output_buffer.append(f"Include {len(self.include)}\n{prices}\n\n")
 
         end_time = time.time()
         sec = end_time - start_time
-        self.output("\nRuntime\n")
-        self.output(str(round(sec, 2)) + " seconds\n")
-        self.output(str(round((sec / 60), 2)) + " minutes\n")
+        self.output_buffer.append(f"\nRuntime\n")
+        self.output_buffer.append(f"{round(sec, 2)} seconds\n")
+        self.output_buffer.append(f"{round((sec / 60), 2)} minutes\n")
+        self.output(''.join(self.output_buffer))            # only one write for output_buffer
         
     
     # streamline output
@@ -50,31 +53,34 @@ class Trade:
 
     # match known assets with all available
     # via api key and check for new wallets
-    def syncWallets(self):
-        exclude = []
-        
+    def syncWallets(self):     
         # read from input file
+        exclude = set()
         with open("/home/dev/code/dat/inp.txt", "r") as infile:
             reader = csv.reader(infile)
             for row in reader:
                 if row[1] == "0":           
-                    self.include.append(row[0])
+                    self.include.add(row[0])
                 elif row[1] == "1":
-                    exclude.append(row[0])
+                    exclude.add(row[0])
         
         # get all wallets from coinbase api
         try:
             account = self.cb_client.get_accounts(limit = 300)
         except Exception as e:
-            self.output(str(e) + "\n\n")
-   
-        # check for new assets
-        names = [wallet['name'].replace(" Wallet", "") for wallet in account.data]
-        for n in names:
-            if n not in self.include and n not in exclude:
-                self.output("### NEW CRYPTO -> " + n + " ###\n\n") 
+            self.output(f"{str(e)}\n\n")
+            return
         
-        self.output("Exclude\n" + str(exclude) + "\n\n")
+        # check for new/removed assets
+        names = {wallet['name'].replace(" Wallet", "") for wallet in account.data}
+        new_cryptos = names - self.include - exclude
+        removed_cryptos = self.include - names 
+        
+        if new_cryptos:
+            self.output_buffer.extend([f"### NEW CRYPTO -> {n} ###\n\n" for n in new_cryptos])
+        if removed_cryptos:
+            self.output_buffer.extend([f"### REMOVED CRYPTO -> {n} ###\n\n" for n in removed_cryptos])
+        self.output_buffer.append(f"Exclude {len(exclude)}\n{exclude}\n\n")
 
 
     # live price
@@ -84,7 +90,7 @@ class Trade:
             ticker = self.cbp.get_product_ticker(product_id = asset)
             return ticker    
         except Exception as e:
-            self.output(str(e) + "\n\n")
+            self.output_buffer.append(f"{str(e)}\n\n")
             return None
 
 
