@@ -9,6 +9,7 @@ import cbpro
 import time
 from datetime import datetime
 import csv
+import pandas as pd
 
 
 class Trade:
@@ -26,17 +27,19 @@ class Trade:
         
         self.syncWallets()                                  # match input file with coinbase api
     
-        # asset prices                                      # keep this until self.include
-        prices = set()                                      # is finalized    
+        # asset prices and historical trading data
+        prices = set()    
         for n in self.include:
             try:
                 ticker = self.getPrice(n)
-                if ticker:
+                if ticker:          # only pull candlestick data if live price works
                     prices.add(f"{n} {ticker['price']}")                
+                    df = self.getHistoric(n)
+                    self.output_buffer.append(f"{n}\n{df}\n\n")         
             except Exception as e:
                 self.output_buffer.append(f"{n} Invalid Price\n\n")
         self.output_buffer.append(f"Include {len(self.include)}\n{prices}\n\n")
-
+        
         end_time = time.time()
         sec = end_time - start_time
         self.output_buffer.append(f"\nRuntime\n")
@@ -68,7 +71,7 @@ class Trade:
         try:
             account = self.cb_client.get_accounts(limit = 300)
         except Exception as e:
-            self.output(f"{str(e)}\n\n")
+            self.output_buffer.append(f"{str(e)}\n\n")
             return
         
         # check for new/removed assets
@@ -89,6 +92,20 @@ class Trade:
             asset += "-USD"
             ticker = self.cbp.get_product_ticker(product_id = asset)
             return ticker    
+        except Exception as e:
+            self.output_buffer.append(f"{str(e)}\n\n")
+            return None
+
+    # candlestick data
+    def getHistoric(self, asset):
+        try:
+            assetUSD = asset + "-USD"
+            # 15 minute granularity * 300 rows = 3.125 days
+            raw = self.cbp.get_product_historic_rates(product_id = assetUSD, granularity = 900)
+            df = pd.DataFrame(raw, columns = ['Date', 'Low', 'High', 'Open', 'Close', 'Volume'])
+            df = df.iloc[::-1].reset_index(drop = True)               # chronological order
+            df['Date'] = pd.to_datetime(df['Date'], unit = 's')       # make readable
+            return df
         except Exception as e:
             self.output_buffer.append(f"{str(e)}\n\n")
             return None
