@@ -28,18 +28,31 @@ class Trade:
         self.syncWallets()                                  # match input file with coinbase api
     
         # asset prices and historical trading data
+        self.output_buffer.append(f"name,mean,median,mode,std,var,min,max,range,iqr,vol,days\n")
         prices = set()    
         for n in self.include:
             try:
                 ticker = self.getPrice(n)
-                if ticker:          # only pull candlestick data if live price works
-                    prices.add(f"{n} {ticker['price']}")                
+                #self.output_buffer.append(f"{n}\n{ticker}\n\n")
+                if ticker:                                  # get price, candlestick and stats info
+                    prices.add(f"{n} {ticker}")                
                     df = self.getHistoric(n)
-                    self.output_buffer.append(f"{n}\n{df}\n\n")         
+                    stats = self.timeDiff(df) 
+                    mean = stats['mean'] 
+                    median = stats['median']
+                    mode = stats['mode']
+                    std = stats['std']
+                    var = stats['variance']
+                    minn = stats['min']
+                    maxx = stats['max']
+                    rnge = stats['range'] 
+                    iqr = stats['iqr']
+                    vol = round(sum(df['Volume']), 0)
+                    length = round((df['Date'].max() - df['Date'].min()).total_seconds() / (24 * 3600), 2)      # convert to days
+                    self.output_buffer.append(f"{n},{mean},{median},{mode},{std},{var},{minn},{maxx},{rnge},{iqr},{vol},{length}\n")
             except Exception as e:
-                self.output_buffer.append(f"{n} Invalid Price\n\n")
-        self.output_buffer.append(f"Include {len(self.include)}\n{prices}\n\n")
-        
+                self.output_buffer.append(f"{e}\n\n")
+        #self.output_buffer.append(f"Include {len(self.include)}\n{prices}\n\n")
         end_time = time.time()
         sec = end_time - start_time
         self.output_buffer.append(f"\nRuntime\n")
@@ -54,8 +67,8 @@ class Trade:
             wire.write(message)
 
 
-    # match known assets with all available
-    # via api key and check for new wallets
+    # match known assets with all available via
+    # api key and check asset availability changes
     def syncWallets(self):     
         # read from input file
         exclude = set()
@@ -71,7 +84,7 @@ class Trade:
         try:
             account = self.cb_client.get_accounts(limit = 300)
         except Exception as e:
-            self.output_buffer.append(f"{str(e)}\n\n")
+            #self.output_buffer.append(f"{str(e)}\n\n")
             return
         
         # check for new/removed assets
@@ -83,18 +96,19 @@ class Trade:
             self.output_buffer.extend([f"### NEW CRYPTO -> {n} ###\n\n" for n in new_cryptos])
         if removed_cryptos:
             self.output_buffer.extend([f"### REMOVED CRYPTO -> {n} ###\n\n" for n in removed_cryptos])
-        self.output_buffer.append(f"Exclude {len(exclude)}\n{exclude}\n\n")
+        #self.output_buffer.append(f"Exclude {len(exclude)}\n{exclude}\n\n")
 
-
-    # live price
+    
+    # authenticated price check
     def getPrice(self, asset):
         try:
-            asset += "-USD"
-            ticker = self.cbp.get_product_ticker(product_id = asset)
-            return ticker    
+            currency_pair = f"{asset}-USD"
+            price = self.cb_client.get_spot_price(currency_pair = currency_pair)
+            return price['amount']
         except Exception as e:
-            self.output_buffer.append(f"{str(e)}\n\n")
+            #self.output_buffer.append(f"{asset}\n{e}\n\n")
             return None
+
 
     # candlestick data
     def getHistoric(self, asset):
@@ -107,8 +121,32 @@ class Trade:
             df['Date'] = pd.to_datetime(df['Date'], unit = 's')       # make readable
             return df
         except Exception as e:
-            self.output_buffer.append(f"{str(e)}\n\n")
+            #self.output_buffer.append(f"{str(e)}\n\n")
             return None
+
+
+    # analyze time difference reporting issue
+    def timeDiff(self, df):
+        # in minutes between consecutive rows
+        df['TimeDiff'] = (df['Date'] - df['Date'].shift(1)).dt.total_seconds() / 60.0
+        
+        # drop the first row because it has NaN in 'TimeDiff'
+        df = df.iloc[1:].reset_index(drop=True)
+        
+        # calculate statistical information
+        stats = {
+            'mean': round(df['TimeDiff'].mean(), 2),
+            'median': round(df['TimeDiff'].median(), 2),
+            'mode': df['TimeDiff'].mode().iloc[0] if not df['TimeDiff'].mode().empty else None,
+            'std': round(df['TimeDiff'].std(), 2),
+            'variance': round(df['TimeDiff'].var(), 2),
+            'min': df['TimeDiff'].min(),
+            'max': df['TimeDiff'].max(),
+            'range': df['TimeDiff'].max() - df['TimeDiff'].min(),
+            'iqr': round(df['TimeDiff'].quantile(0.75) - df['TimeDiff'].quantile(0.25), 2)
+        }
+
+        return stats
 
 
 # void main
